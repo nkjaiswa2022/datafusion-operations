@@ -1,6 +1,5 @@
-google-cloud-monitoring 
-google-cloud-data-fusion 
-google-auth 
-google-auth-transport-requests 
-requests 
+google-cloud-monitoring
+google-cloud-data-fusion
+google-auth
+requests
 ConfigParser
