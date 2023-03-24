@@ -22,15 +22,62 @@ import time
 from configparser import ConfigParser
 import sys
 
+def df_monitoring_alerts(request):
+    project_id  = os.environ.get("df_project_id","dummy") 
+    region  = os.environ.get("df_region","dummy")
+    instanceList = os.environ.get("df_instances","dummy")
+    INSTANCE_LIST = instanceList.strip('[]').split(',')
+    serviceList = os.environ.get("df_services","dummy")
+    SERVICE_LIST = serviceList.strip('[]').split(',')
+    for INSTANCE_NM in INSTANCE_LIST:
+        CDAP_ENDPOINT = get_CDAPendpoint(PROJECT_NM, region, INSTANCE_NM)
 
-parser = ConfigParser()
-parser.read('sampleconfig.ini')
-PROJECT_NM = parser.get('gcp','PROJECT_NM')
-region = parser.get('gcp','region')
-instanceList = sys.argv[1]
-INSTANCE_LIST = instanceList.strip('[]').split(',')
-serviceList = sys.argv[2]
-SERVICE_LIST = serviceList.strip('[]').split(',')
+        for service_name in SERVICE_LIST:
+            credentials, project = google.auth.default(scopes=['https://www.googleapis.com/auth/cloud-platform'])
+            #credentials = service_account.Credentials.from_service_account_file('//etc/sa-data-fusion-pipeline-run.json', scopes=['https://www.googleapis.com/auth/cloud-platform', 'https://www.googleapis.com/auth/userinfo.email'])
+            auth_req = google.auth.transport.requests.Request()
+            credentials.refresh(auth_req)
+            AUTH_TOKEN = credentials.token
+            headers = {"Authorization": "Bearer "+AUTH_TOKEN}
+            if service_name == "wrangler.service":
+                request_url = f"{CDAP_ENDPOINT}/v3/namespaces/system/apps/dataprep/services/service/status"
+                response = requests.get(request_url, headers=headers)
+                status = response.status_code
+            elif service_name == "pipeline.studio":
+                request_url = f"{CDAP_ENDPOINT}/v3/namespaces/system/apps/pipeline/services/studio/status"
+                response = requests.get(request_url, headers=headers)
+                status = response.status_code
+            else:
+                request_url = f"{CDAP_ENDPOINT}/v3/system/services/{service_name}/status"
+                response = requests.get(request_url, headers=headers)
+                status = response.status_code
+        
+            #send service statuscode to cloud monitoring metrics
+            client = monitoring_v3.MetricServiceClient()
+            project_name = client.common_project_path(PROJECT_NM)
+            series = monitoring_v3.types.TimeSeries()
+
+            # Set resource labels
+            series.resource.type = 'generic_task'
+            series.resource.labels['task_id'] = PROJECT_NM
+            series.resource.labels['job'] = INSTANCE_NM
+            series.resource.labels['namespace'] = "default"
+            series.resource.labels['location'] = region
+
+            # Set metric labels
+            series.metric.type = f"custom.googleapis.com/cdf/{PROJECT_NM}/{INSTANCE_NM}/services/healthCheck"
+            series.metric.labels['project_id'] = PROJECT_NM
+            series.metric.labels['serive_name'] = service_name
+
+            # Set metric value
+            now = time.time()
+            seconds = int(now)
+            nanos = int((now - seconds) * 10 ** 9)
+            interval = monitoring_v3.TimeInterval({"end_time": {"seconds": seconds, "nanos": nanos}})
+            point = monitoring_v3.Point({"interval": interval , "value": {"double_value": status}})
+            series.points = [point]
+            client.create_time_series(request={"name": project_name, "time_series": [series]})
+
 
 def get_CDAPendpoint(project_id, region, instance_name):
     client = data_fusion_v1.DataFusionClient()
@@ -40,53 +87,8 @@ def get_CDAPendpoint(project_id, region, instance_name):
     api_endpoint = response.api_endpoint
     return api_endpoint
 
-for INSTANCE_NM in INSTANCE_LIST:
-    CDAP_ENDPOINT = get_CDAPendpoint(PROJECT_NM, region, INSTANCE_NM)
 
-    for service_name in SERVICE_LIST:
-        credentials, project = google.auth.default(scopes=['https://www.googleapis.com/auth/cloud-platform'])
-        #credentials = service_account.Credentials.from_service_account_file('//etc/sa-data-fusion-pipeline-run.json', scopes=['https://www.googleapis.com/auth/cloud-platform', 'https://www.googleapis.com/auth/userinfo.email'])
-        auth_req = google.auth.transport.requests.Request()
-        credentials.refresh(auth_req)
-        AUTH_TOKEN = credentials.token
-        headers = {"Authorization": "Bearer "+AUTH_TOKEN}
-        if service_name == "wrangler.service":
-            request_url = f"{CDAP_ENDPOINT}/v3/namespaces/system/apps/dataprep/services/service/status"
-            response = requests.get(request_url, headers=headers)
-            status = response.status_code
-        elif service_name == "pipeline.studio":
-            request_url = f"{CDAP_ENDPOINT}/v3/namespaces/system/apps/pipeline/services/studio/status"
-            response = requests.get(request_url, headers=headers)
-            status = response.status_code
-        else:
-            request_url = f"{CDAP_ENDPOINT}/v3/system/services/{service_name}/status"
-            response = requests.get(request_url, headers=headers)
-            status = response.status_code
-        
-        #send service statuscode to cloud monitoring metrics
-        client = monitoring_v3.MetricServiceClient()
-        project_name = client.common_project_path(PROJECT_NM)
-        series = monitoring_v3.types.TimeSeries()
 
-        # Set resource labels
-        series.resource.type = 'generic_task'
-        series.resource.labels['task_id'] = PROJECT_NM
-        series.resource.labels['job'] = INSTANCE_NM
-        series.resource.labels['namespace'] = "default"
-        series.resource.labels['location'] = region
 
-        # Set metric labels
-        series.metric.type = f"custom.googleapis.com/cdf/{PROJECT_NM}/{INSTANCE_NM}/services/healthCheck"
-        series.metric.labels['project_id'] = PROJECT_NM
-        series.metric.labels['serive_name'] = service_name
-
-        # Set metric value
-        now = time.time()
-        seconds = int(now)
-        nanos = int((now - seconds) * 10 ** 9)
-        interval = monitoring_v3.TimeInterval({"end_time": {"seconds": seconds, "nanos": nanos}})
-        point = monitoring_v3.Point({"interval": interval , "value": {"double_value": status}})
-        series.points = [point]
-        client.create_time_series(request={"name": project_name, "time_series": [series]})
 
 
